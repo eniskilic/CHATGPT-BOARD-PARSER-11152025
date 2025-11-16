@@ -14,12 +14,13 @@ from generators.label_generator import (
     generate_grouped_shipping_and_manufacturing_pdf,
 )
 
-
+# ---------------------------------------------------------
+# Streamlit app config
+# ---------------------------------------------------------
 st.set_page_config(
     page_title="Charcuterie Board Order Parser",
     layout="wide"
 )
-
 
 st.title("Charcuterie Board Order Parser")
 
@@ -34,6 +35,9 @@ instead of page order.
 """
 )
 
+# ---------------------------------------------------------
+# Sidebar: file uploads
+# ---------------------------------------------------------
 st.sidebar.header("Upload PDFs")
 
 order_files = st.sidebar.file_uploader(
@@ -50,22 +54,26 @@ shipping_files = st.sidebar.file_uploader(
 
 run_btn = st.sidebar.button("Parse & Generate")
 
-
+# ---------------------------------------------------------
+# Main logic
+# ---------------------------------------------------------
 if run_btn:
     if not order_files:
         st.error("Please upload at least one order details PDF.")
         st.stop()
 
+    # Parse orders
     with st.spinner("Parsing order details..."):
         orders_df = parse_order_details_pdfs(order_files)
 
     if orders_df.empty:
         st.error("No orders were parsed. Please check your PDFs.")
         st.stop()
-        
-labels_df = pd.DataFrame()
 
-# Parse shipping labels (optional)
+    # Ensure labels_df always exists
+    labels_df = pd.DataFrame()
+
+    # Parse shipping labels (optional)
     if shipping_files:
         with st.spinner("Parsing shipping labels..."):
             labels_df = parse_shipping_label_pdfs(shipping_files)
@@ -75,48 +83,56 @@ labels_df = pd.DataFrame()
         orders_df["shipping_label_status"] = "⚠️ Missing"
         orders_df["matched_label_id"] = ""
 
-    # For UI filtering we use the non-expanded table
+    # -----------------------------------------------------
+    # Parsed orders table (before quantity expansion)
+    # -----------------------------------------------------
     st.subheader("Parsed Orders (Before Quantity Expansion)")
 
-    # Filters
+    # ---- Filters ----
     col1, col2, col3, col4 = st.columns(4)
 
+    # Prepare date series safely
+    date_series = pd.to_datetime(orders_df["order_date"], errors="coerce")
+
     with col1:
-        date_min = orders_df["order_date"].min()
-        date_max = orders_df["order_date"].max()
-        date_filter = st.date_input(
-            "Filter by Order Date",
-            value=(pd.to_datetime(date_min).date()
-                   if pd.notnull(date_min) else None,
-                   pd.to_datetime(date_max).date()
-                   if pd.notnull(date_max) else None),
-        )
+        if date_series.notna().any():
+            date_min = date_series.min().date()
+            date_max = date_series.max().date()
+            date_filter = st.date_input(
+                "Filter by Order Date",
+                value=(date_min, date_max),
+            )
+        else:
+            st.write("No valid order dates to filter.")
+            date_filter = None
 
     with col2:
+        design_options = sorted(orders_df["design_number"].dropna().unique().tolist())
         design_filter = st.multiselect(
             "Design #",
-            sorted(orders_df["design_number"].dropna().unique().tolist()),
-            default=sorted(orders_df["design_number"].dropna().unique().tolist()),
+            design_options,
+            default=design_options,
         )
 
     with col3:
+        sku_options = sorted(orders_df["sku"].dropna().unique().tolist())
         sku_filter = st.multiselect(
             "SKU",
-            sorted(orders_df["sku"].dropna().unique().tolist()),
-            default=sorted(orders_df["sku"].dropna().unique().tolist()),
+            sku_options,
+            default=sku_options,
         )
 
     with col4:
         buyer_search = st.text_input("Search Buyer Name", "")
 
+    # ---- Apply filters ----
     filtered = orders_df.copy()
 
-    # Date range filter
+    # Date range filter (if we have a valid range)
     if isinstance(date_filter, tuple) and len(date_filter) == 2:
         start_date, end_date = date_filter
         if start_date and end_date:
-            mask = (pd.to_datetime(filtered["order_date"], errors="coerce").dt.date
-                    .between(start_date, end_date))
+            mask = date_series.dt.date.between(start_date, end_date)
             filtered = filtered[mask]
 
     # Design filter
@@ -127,7 +143,7 @@ labels_df = pd.DataFrame()
     if sku_filter:
         filtered = filtered[filtered["sku"].isin(sku_filter)]
 
-    # Buyer name search
+    # Buyer name search (short name or full ship_to_name)
     if buyer_search:
         filtered = filtered[
             filtered["buyer_name"].str.contains(buyer_search, case=False, na=False)
@@ -151,13 +167,17 @@ labels_df = pd.DataFrame()
 
     st.dataframe(filtered[display_cols], use_container_width=True)
 
-    # Expanded DF for manufacturing labels and LightBurn
+    # -----------------------------------------------------
+    # Expanded DF (one row per physical board)
+    # -----------------------------------------------------
     expanded_df = expand_by_quantity(filtered)
 
     st.markdown("---")
     st.subheader("Downloads")
 
+    # -----------------------------------------------------
     # 1) Design-specific LightBurn CSVs
+    # -----------------------------------------------------
     design_csvs = generate_design_csvs(expanded_df)
 
     if design_csvs:
@@ -173,7 +193,7 @@ labels_df = pd.DataFrame()
                 key=f"dl_design_{design}",
             )
 
-        # All CSVs as ZIP
+        # All design CSVs in one ZIP
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for design, csv_bytes in design_csvs.items():
@@ -190,7 +210,9 @@ labels_df = pd.DataFrame()
     else:
         st.info("No design CSVs generated (no valid design numbers found).")
 
-    # 2) Gift messages
+    # -----------------------------------------------------
+    # 2) Gift messages CSV
+    # -----------------------------------------------------
     st.markdown("### Gift Messages")
 
     gift_csv_bytes = generate_gift_messages_csv(expanded_df)
@@ -205,7 +227,9 @@ labels_df = pd.DataFrame()
     else:
         st.info("No gift messages found (gift_note: YES).")
 
-    # 3) Manufacturing labels PDF
+    # -----------------------------------------------------
+    # 3) Manufacturing labels PDF (4×6, boards only)
+    # -----------------------------------------------------
     st.markdown("### Manufacturing Labels (4×6 PDF)")
 
     labels_pdf = generate_manufacturing_labels_pdf(expanded_df)
@@ -220,11 +244,41 @@ labels_df = pd.DataFrame()
     else:
         st.info("No labels generated (no orders after filters).")
 
+    # -----------------------------------------------------
+    # 4) Combined Shipping + Manufacturing PDF (Pattern B)
+    #    Pattern B: for each shipment (matched_label_id):
+    #       - Add shipping label ONCE
+    #       - Then all manufacturing labels for that address
+    # -----------------------------------------------------
+    st.markdown("### Combined Shipping + Manufacturing PDF (Pattern B)")
+
+    if shipping_files and not labels_df.empty:
+        combined_pdf = generate_grouped_shipping_and_manufacturing_pdf(
+            expanded_df, labels_df, shipping_files
+        )
+        if combined_pdf:
+            st.download_button(
+                label="Download Combined Shipping + Manufacturing PDF",
+                file_name="shipping_plus_manufacturing_patternB.pdf",
+                mime="application/pdf",
+                data=combined_pdf,
+                key="dl_combined_pdf",
+            )
+        else:
+            st.info(
+                "No combined PDF generated (no orders with matched shipping labels after filters)."
+            )
+    else:
+        st.info(
+            "Upload shipping label PDFs to enable the combined shipping + manufacturing PDF."
+        )
+
     st.markdown("---")
     st.caption(
         "Shipping labels are matched by buyer name + address + ZIP. "
         "Orders without a matching label are flagged as '⚠️ Missing' "
         "but still get manufacturing labels."
     )
+
 else:
     st.info("Upload your PDFs in the sidebar and click **Parse & Generate** to start.")
