@@ -37,7 +37,6 @@ def _extract_label_from_page(text: str, page_index: int):
         return None
 
     return {
-        "label_id": f"label_page_{page_index+1}",
         "recipient_name": recipient_name,
         "address_line1": address_line1,
         "city": city,
@@ -50,19 +49,31 @@ def parse_shipping_label_pdfs(uploaded_files) -> pd.DataFrame:
     """
     Parse shipping label PDFs into a DataFrame with one row per label.
     Does NOT depend on manifest pages.
+
+    Adds:
+      - label_id           -> "pdf{file_idx}_page_{page_idx}"
+      - source_file_index  -> index within uploaded_files
+      - source_file_name   -> original PDF file name
+      - page_index         -> 0-based page index
     """
     labels = []
 
-    for uploaded in uploaded_files:
+    for file_idx, uploaded in enumerate(uploaded_files):
         try:
+            # Reset file pointer in case it was read before
+            uploaded.seek(0)
             file_bytes = uploaded.read()
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                for i, page in enumerate(pdf.pages):
+                for page_idx, page in enumerate(pdf.pages):
                     try:
                         text = page.extract_text() or ""
-                        label = _extract_label_from_page(text, i)
-                        if label:
-                            labels.append(label)
+                        label_core = _extract_label_from_page(text, page_idx)
+                        if label_core:
+                            label_core["label_id"] = f"pdf{file_idx}_page_{page_idx}"
+                            label_core["source_file_index"] = file_idx
+                            label_core["source_file_name"] = uploaded.name
+                            label_core["page_index"] = page_idx
+                            labels.append(label_core)
                     except Exception:
                         continue
         except Exception as e:
