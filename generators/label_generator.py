@@ -3,6 +3,7 @@ import io
 import pandas as pd
 from reportlab.lib.pagesizes import inch
 from reportlab.pdfgen import canvas
+from PyPDF2 import PdfReader, PdfWriter
 
 from utils.helpers import safe_strip
 
@@ -134,5 +135,92 @@ def generate_manufacturing_labels_pdf(expanded_df: pd.DataFrame) -> bytes:
         c.showPage()
 
     c.save()
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def generate_grouped_shipping_and_manufacturing_pdf(
+    expanded_df: pd.DataFrame,
+    labels_df: pd.DataFrame,
+    shipping_files,
+) -> bytes:
+    """
+    Pattern 2 (Option B):
+
+    For each shipment (matched_label_id):
+
+        1) Add the Shipping Label page ONCE
+        2) Add ALL manufacturing labels for that shipment
+
+    Requirements:
+      - expanded_df: must contain 'matched_label_id'
+      - labels_df: from parse_shipping_label_pdfs, with label_id + source_file_index + page_index
+      - shipping_files: original uploaded shipping PDFs (list of UploadedFile)
+    """
+    if expanded_df.empty:
+        return b""
+    if labels_df is None or labels_df.empty:
+        return b""
+    if not shipping_files:
+        return b""
+
+    # Keep only rows that actually have a matched label
+    df = expanded_df.copy()
+    df = df[df["matched_label_id"].astype(bool)]
+    if df.empty:
+        return b""
+
+    # Sort rows inside shipments: by design, then buyer, then order_id
+    sort_cols = [col for col in ["matched_label_id", "design_number", "buyer_name", "order_id"] if col in df.columns]
+    df = df.sort_values(sort_cols, na_position="last").reset_index(drop=True)
+
+    # Assign each manufacturing row a page index (0-based) in the manufacturing-only PDF
+    df["mfg_page_index"] = range(len(df))
+
+    # Generate manufacturing-only PDF in that exact order
+    mfg_pdf_bytes = generate_manufacturing_labels_pdf(df)
+    mfg_reader = PdfReader(io.BytesIO(mfg_pdf_bytes))
+
+    # Build readers for the original shipping PDFs
+    shipping_readers = []
+    for uploaded in shipping_files:
+        uploaded.seek(0)
+        file_bytes = uploaded.read()
+        shipping_readers.append(PdfReader(io.BytesIO(file_bytes)))
+
+    # Build map: label_id -> label row (with file index + page index)
+    label_map = {}
+    for _, row in labels_df.iterrows():
+        lid = row.get("label_id", "")
+        if lid:
+            label_map[lid] = row
+
+    writer = PdfWriter()
+
+    # Group manufacturing rows by matched_label_id (shipment)
+    for label_id, group in df.groupby("matched_label_id"):
+        label_row = label_map.get(label_id)
+
+        # 1) Shipping label (once)
+        if label_row is not None:
+            try:
+                src_idx = int(label_row["source_file_index"])
+                page_idx = int(label_row["page_index"])
+                shipping_page = shipping_readers[src_idx].pages[page_idx]
+                writer.add_page(shipping_page)
+            except Exception as e:
+                # If we fail to add shipping page, we still add manufacturing labels
+                print(f"Could not add shipping page for {label_id}: {e}")
+
+        # 2) All manufacturing labels for this shipment
+        for _, r in group.iterrows():
+            try:
+                page_idx = int(r["mfg_page_index"])
+                writer.add_page(mfg_reader.pages[page_idx])
+            except Exception as e:
+                print(f"Could not add manufacturing page {page_idx}: {e}")
+
+    buf = io.BytesIO()
+    writer.write(buf)
     buf.seek(0)
     return buf.getvalue()
