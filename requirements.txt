@@ -1,0 +1,6 @@
+streamlit
+pdfplumber
+pandas
+reportlab
+PyPDF2
+python-dateutil
