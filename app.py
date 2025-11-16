@@ -9,7 +9,10 @@ from parsers.shipping_parser import parse_shipping_label_pdfs
 from parsers.label_matcher import match_orders_to_labels
 from generators.csv_generator import expand_by_quantity, generate_design_csvs
 from generators.gift_exporter import generate_gift_messages_csv
-from generators.label_generator import generate_manufacturing_labels_pdf
+from generators.label_generator import (
+    generate_manufacturing_labels_pdf,
+    generate_grouped_shipping_and_manufacturing_pdf,
+)
 
 
 st.set_page_config(
@@ -59,8 +62,10 @@ if run_btn:
     if orders_df.empty:
         st.error("No orders were parsed. Please check your PDFs.")
         st.stop()
+        
+labels_df = pd.DataFrame()
 
-    # Parse shipping labels (optional)
+# Parse shipping labels (optional)
     if shipping_files:
         with st.spinner("Parsing shipping labels..."):
             labels_df = parse_shipping_label_pdfs(shipping_files)
