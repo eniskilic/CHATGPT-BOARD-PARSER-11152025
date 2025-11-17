@@ -9,7 +9,10 @@ from parsers.shipping_parser import parse_shipping_label_pdfs
 from parsers.label_matcher import match_orders_to_labels
 from generators.csv_generator import expand_by_quantity, generate_design_csvs
 from generators.gift_exporter import generate_gift_messages_csv
-from generators.label_generator import generate_manufacturing_labels_pdf
+from generators.label_generator import (
+    generate_manufacturing_labels_pdf,
+    generate_gift_message_labels_pdf,  # NEW
+)
 
 # ---------------------------------------------------------
 # Streamlit app config
@@ -232,21 +235,37 @@ else:
     st.info("No design CSVs generated (no valid design numbers found).")
 
 # -----------------------------------------------------
-# 2) Gift messages CSV
+# 2) Gift messages (CSV + 4×6 labels PDF)
 # -----------------------------------------------------
 st.markdown("### Gift Messages")
 
 gift_csv_bytes = generate_gift_messages_csv(expanded_df)
-if gift_csv_bytes:
-    st.download_button(
-        label="Download All Gift Messages (CSV)",
-        file_name="gift_messages.csv",
-        mime="text/csv",
-        data=gift_csv_bytes,
-        key="dl_gift_messages",
-    )
+gift_labels_pdf = generate_gift_message_labels_pdf(expanded_df)
+
+if not gift_csv_bytes and not gift_labels_pdf:
+    st.info("No gift messages found.")
 else:
-    st.info("No gift messages found (gift_note: YES).")
+    col_g1, col_g2 = st.columns(2)
+
+    with col_g1:
+        if gift_csv_bytes:
+            st.download_button(
+                label="Download All Gift Messages (CSV)",
+                file_name="gift_messages.csv",
+                mime="text/csv",
+                data=gift_csv_bytes,
+                key="dl_gift_messages",
+            )
+
+    with col_g2:
+        if gift_labels_pdf:
+            st.download_button(
+                label="Download Gift Message Labels PDF (4×6)",
+                file_name="gift_message_labels_4x6.pdf",
+                mime="application/pdf",
+                data=gift_labels_pdf,
+                key="dl_gift_labels_pdf",
+            )
 
 # -----------------------------------------------------
 # 3) Manufacturing labels PDF (4×6, boards only)
